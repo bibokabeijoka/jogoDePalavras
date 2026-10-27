@@ -24,6 +24,7 @@ describe("regras da partida", () => {
   it("normaliza caracteres acentuados e mantém o tamanho após normalização", () => {
     assert.equal(normalizeWord("limão"), "LIMAO");
     assert.equal(normalizeWord("MARÇO"), "MARCO");
+    assert.equal(normalizeWord("ac\u0327a\u0303o"), "ACAO");
   });
 
   it("avalia letras exatas antes de consumir ocorrências repetidas", () => {
@@ -33,6 +34,21 @@ describe("regras da partida", () => {
     assert.deepEqual(evaluateGuess("AAAAA", "LIMAO"), [
       "absent", "absent", "absent", "correct", "absent"
     ]);
+  });
+
+  it("marca letras repetidas sem contar ocorrências além das existentes", () => {
+    assert.deepEqual(evaluateGuess("CABRA", "BANCO"), [
+      "present", "correct", "present", "absent", "absent"
+    ]);
+    assert.deepEqual(evaluateGuess("AAAAA", "MANGA"), [
+      "absent", "correct", "absent", "absent", "correct"
+    ]);
+  });
+
+  it("rejeita palpites e respostas com tamanhos diferentes", () => {
+    assert.throws(() => evaluateGuess("CASA", "CASAS"), {
+      message: "Palpite e resposta devem ter o mesmo tamanho."
+    });
   });
 
   it("contém apenas palavras de cinco letras e respostas sem colisões por acento", () => {
@@ -113,5 +129,59 @@ describe("API diária", () => {
     assert.equal(restoredState.status, "lost");
     assert.equal(restoredState.guesses.length, 6);
     assert.equal(restoredState.answer, getAnswer(today.puzzleId));
+  });
+
+  it("aceita a resposta acentuada, registra vitória e bloqueia novas tentativas", async () => {
+    const todayResponse = await fetch(`${baseUrl}/api/v1/puzzles/today`);
+    const today = await todayResponse.json();
+    const sessionId = randomUUID();
+    const answer = getAnswer(today.puzzleId);
+    const response = await fetch(`${baseUrl}/api/v1/puzzles/${today.puzzleId}/guesses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, guess: answer.toLocaleLowerCase("pt-BR"), requestId: randomUUID() })
+    });
+
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.status, "won");
+    assert.equal(result.attemptsUsed, 1);
+    assert.equal(result.attemptsRemaining, 5);
+    assert.equal(result.answer, answer);
+    assert.deepEqual(result.marks, Array(5).fill("correct"));
+
+    const restored = await fetch(`${baseUrl}/api/v1/puzzles/${today.puzzleId}/state?sessionId=${sessionId}`);
+    const restoredState = await restored.json();
+    assert.equal(restoredState.status, "won");
+    assert.equal(restoredState.guesses.length, 1);
+    assert.equal(restoredState.answer, answer);
+
+    const retry = await fetch(`${baseUrl}/api/v1/puzzles/${today.puzzleId}/guesses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, guess: answer, requestId: randomUUID() })
+    });
+    assert.equal(retry.status, 409);
+    assert.equal((await retry.json()).code, "GAME_FINISHED");
+  });
+
+  it("rejeita sessão inválida e palpites com tamanho incorreto", async () => {
+    const todayResponse = await fetch(`${baseUrl}/api/v1/puzzles/today`);
+    const today = await todayResponse.json();
+    const invalidSession = await fetch(`${baseUrl}/api/v1/puzzles/${today.puzzleId}/guesses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: "invalida", guess: "LIMAO", requestId: randomUUID() })
+    });
+    assert.equal(invalidSession.status, 400);
+    assert.equal((await invalidSession.json()).code, "INVALID_SESSION");
+
+    const invalidGuess = await fetch(`${baseUrl}/api/v1/puzzles/${today.puzzleId}/guesses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: randomUUID(), guess: "CASA", requestId: randomUUID() })
+    });
+    assert.equal(invalidGuess.status, 400);
+    assert.equal((await invalidGuess.json()).code, "INVALID_LENGTH");
   });
 });
